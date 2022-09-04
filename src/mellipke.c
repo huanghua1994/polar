@@ -6,11 +6,11 @@
  * Dalal Sukkari (dalal.sukkari@kaust.edu.sa)
  * David Keyes (david.keyes@kaust.edu.sa)
  * Hatem Ltaief (hatem.ltaief@kaust.edu.sa)
- *  
+ *
  * Redistribution  and  use  in  source and binary forms, with or without
  * modification,  are  permitted  provided  that the following conditions
  * are met:
- * 
+ *
  * Redistributions  of  source  code  must  retain  the above copyright
  * notice,  this  list  of  conditions  and  the  following  disclaimer.
  * Redistributions  in  binary  form must reproduce the above copyright
@@ -36,9 +36,9 @@
  **/
 #include "polar.h"
 
-int mellipke( double alpha, double *k, double *e)
+int mellipke(double alpha, double *k, double *e)
 {
-    /* ELLIPKE Complete elliptic integral. Modified from Matlab's built-in code 
+    /* ELLIPKE Complete elliptic integral. Modified from Matlab's built-in code
      * for improved accuracy
      */
     double m, m1, mm, a0, b0, s0;
@@ -52,32 +52,39 @@ int mellipke( double alpha, double *k, double *e)
 
     eps = LAPACKE_dlamch_work('e');
     tol = eps;
-    
 
-    if (m == 0.0) {k[0] = 0.0; *e = k[0]; return 0;}
-    if (m < 0 || m > 1){ 
-	fprintf(stderr, "error(ellipke:MOutOfRange)") ;
-	return -1;
+    if (m == 0.0)
+    {
+        k[0] = 0.0;
+        *e = k[0];
+        return 0;
+    }
+    if (m < 0 || m > 1)
+    {
+        fprintf(stderr, "error(ellipke:MOutOfRange)");
+        return -1;
     }
 
     a0 = 1.;
     b0 = cos(alpha);
     s0 = m;
-    i1 = 0.; mm = 1.;
+    i1 = 0.;
+    mm = 1.;
 
-    while ( mm > tol){
-        a1 = (a0+b0)/2;
-        b1 = sqrt(a0*b0);
-        c1 = (a0-b0)/2;
+    while (mm > tol)
+    {
+        a1 = (a0 + b0) / 2;
+        b1 = sqrt(a0 * b0);
+        c1 = (a0 - b0) / 2;
         i1 = i1 + 1;
-        w1 = cpow(2,i1)*c1*c1;
+        w1 = cpow(2, i1) * c1 * c1;
         mm = w1;
         s0 = s0 + w1;
         a0 = a1;
         b0 = b1;
     }
 
-    *k = M_PI/(2*a1);
-    *e = k[0]*(1-s0/2);
-return 0;
+    *k = M_PI / (2 * a1);
+    *e = k[0] * (1 - s0 / 2);
+    return 0;
 }
