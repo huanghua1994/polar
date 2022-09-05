@@ -21,6 +21,7 @@
 
 #include "polar.h"
 
+extern int choosem(double con, int *m);
 extern void pdgenm2(double *A, int M, int N, int descA[9], double *W, int descW[9], double *Sx, int descSx[9],
                     double *e, double tol);
 
@@ -187,7 +188,7 @@ extern void pdgenm2(double *A, int M, int N, int descA[9], double *W, int descW[
 
 int pdgezolopd(char *jobh, int M, int N, double *A_all, int iA_all, int jA_all, int descA_all[9], double *B_all,
                int iB_all, int jB_all, int descB_all[9], double *Work1, int lWork1, double *Work2, int lWork2,
-               int *info)
+               int *info, int zolo_r)
 {
 
     int init = 0;
@@ -213,7 +214,7 @@ int pdgezolopd(char *jobh, int M, int N, double *A_all, int iA_all, int jA_all, 
     double reduced_potime = 0.0, reduced_qrtime = 0.0;
     double reduced_Htime = 0.0, reduced_nstime = 0.0;
 
-    int verbose = 0, prof = 0, optcond = 0, symm = 0, ns = 0;
+    int verbose = 0, prof = 1, optcond = 0, symm = 0, ns = 0;
     double *tau_all = (double *)malloc(N * sizeof(double));
     double *flops;
     *flops = 0.;
@@ -245,7 +246,7 @@ int pdgezolopd(char *jobh, int M, int N, double *A_all, int iA_all, int jA_all, 
     /*
      * Get the grid parameters
      */
-    if (verbose)
+    if (verbose && myrank_mpi == 0)
         fprintf(stderr, "Getting the grid parameters \n");
     ictxt_all = descA_all[ctxt_];
     Cblacs_get(-1, 0, &ictxt_all);
@@ -344,7 +345,7 @@ int pdgezolopd(char *jobh, int M, int N, double *A_all, int iA_all, int jA_all, 
 
     if (*info != 0)
     {
-        pxerbla_(ictxt_all, "PDGEZOLOPD", &(int){-1 * info[0]});
+        pxerbla_(&ictxt_all, "PDGEZOLOPD", &(int){-1 * info[0]});
         return 0;
     }
     else if (lquery)
@@ -458,7 +459,8 @@ int pdgezolopd(char *jobh, int M, int N, double *A_all, int iA_all, int jA_all, 
         Anorm = pdlange_("1", &M, &N, A_all, &i1, &i1, descA_all, Work2);
         pdgetrf_(&M, &N, A_all, &i1, &i1, descA_all, Wi_all, &iinfo);
         pdgecon_("1", &M, A_all, &i1, &i1, descA_all, &Anorm, &Li, Work2, &lWork2, Wi_all, &lWi_all, &iinfo);
-        Li = Anorm * Li;
+        // Bug! Li given by pdgecon is already the estimated reciprocal of the condition number
+        // Li = Anorm * Li;   
         // Li = Li/sqrt(N); // This reduces the accuracy
         *flops += FLOPS_DGETRF(M, N);
         //*flops += FLOPS_DGETRF(M, N) + 2. * FLOPS_DTRSM( 'L', N, 1 );
@@ -499,10 +501,21 @@ int pdgezolopd(char *jobh, int M, int N, double *A_all, int iA_all, int jA_all, 
         fprintf(stderr, " Scale by Li\n");
     alpha = 1.0;
     pdlascl_("G", &Li, &alpha, &M, &N, A_all, &i1, &i1, descA_all, &iinfo);
-
     con = 1.0 / Li;
-    choosem(con, &m_zol);
+    if (zolo_r == 0)
+    {
+        if (con < 2) itmax = 1; else itmax = 2;
+        choosem(con, &m_zol);
+    } else {
+        // Table 1 in the paper, upper bound
+        m_zol = zolo_r;
+        if (zolo_r == 1) itmax = 6;
+        if (zolo_r == 2) itmax = 4;
+        if (zolo_r >= 3) itmax = 3;
+        if (zolo_r == 8) itmax = 2;
+    }
     nbprob = m_zol;
+    if (prof && myrank_mpi == 0) fprintf(stderr, "cond(A), itmax, zolo-r, m_zol = %e, %d, %d, %d\n", con, itmax, zolo_r, m_zol);
 
     /*
      * Computing the number of processor per subproblem
@@ -527,8 +540,8 @@ int pdgezolopd(char *jobh, int M, int N, double *A_all, int iA_all, int jA_all, 
         }
     }
     {
-        if (flag == 0)
-        /* nbproc is a prime number */
+        if (flag == 0 && nbproc != 2)
+        /* nbproc is a prime number and nbproc > 2*/
         {
             nbproc = nbproc - 1;
         }
@@ -547,6 +560,7 @@ int pdgezolopd(char *jobh, int M, int N, double *A_all, int iA_all, int jA_all, 
     nprow = min(ndim[0], ndim[1]);
     npcol = max(ndim[0], ndim[1]);
 
+    /*
     if (myrank_mpi == 0)
     {
         fprintf(stderr, " The number of subproblems to be solved independently is %d\n", m_zol);
@@ -567,21 +581,16 @@ int pdgezolopd(char *jobh, int M, int N, double *A_all, int iA_all, int jA_all, 
         fprintf(stderr, " There will be %d unused processors\n", (nprow_all * npcol_all - nbproc * m_zol));
         fprintf(stderr, " To use all the processors, use number of processors = nonprime x %d \n", m_zol);
     }
+    */
+    if (prof && myrank_mpi == 0)
+    {
+        fprintf(stderr, "%d sub-problems * proc grid %d * %d, ", m_zol, nprow, npcol);
+        fprintf(stderr, "unused proc = %d\n", nprow_all * npcol_all - nbproc * m_zol);
+    }
 
     int color = (myrank_mpi < max_rank) ? 0 : 1;
     MPI_Comm new_comm;
     MPI_Comm_split(MPI_COMM_WORLD, color, myrank_mpi, &new_comm);
-
-    if (con < 2)
-    {
-        itmax = 1;
-    }
-    else
-    {
-        itmax = 2;
-    }
-    // else
-    //    {itmax = 3;} // need this for ill-cond matrix with cond=1e16
 
     /*
      * Map processes to different context
@@ -691,6 +700,8 @@ int pdgezolopd(char *jobh, int M, int N, double *A_all, int iA_all, int jA_all, 
 
         con = 1.0 / Li;
         it = 0;
+        /* 
+        // This block is redundant
         choosem(con, &m);
         m_zol = m;
         if (con < 2)
@@ -703,6 +714,7 @@ int pdgezolopd(char *jobh, int M, int N, double *A_all, int iA_all, int jA_all, 
         }
         // else
         //    {itmax = 3;} // need this for ill-cond matrix with cond=1e16
+        */
 
         /*
          * Allocate U_ac on group0 so that all groups copy to it
@@ -731,6 +743,8 @@ int pdgezolopd(char *jobh, int M, int N, double *A_all, int iA_all, int jA_all, 
             fprintf(stderr, "Start computing the orthogonal polar factor on all the ctxt\n");
         }
 
+        double qr_total = 0, chol_total = 0, comm_total = 0;
+        double U_time = -MPI_Wtime();
         while (myrank_mpi < max_rank && it < itmax)
         {
             it = it + 1;
@@ -782,7 +796,8 @@ int pdgezolopd(char *jobh, int M, int N, double *A_all, int iA_all, int jA_all, 
                 if (c[i] >= maxc)
                     maxc = c[i];
             }
-            if (it <= itmax && maxc > 1e2)
+            //if (it <= itmax && maxc > 1e2)
+            if (it == 1)
             {
                 if (verbose && myrank_mpi == 0)
                 {
@@ -957,11 +972,8 @@ int pdgezolopd(char *jobh, int M, int N, double *A_all, int iA_all, int jA_all, 
                 {
                     qrtime += MPI_Wtime();
                     MPI_Allreduce(&qrtime, &reduced_qrtime, 1, MPI_DOUBLE, MPI_MAX, new_comm);
-                    if (myrank_mpi == 0)
-                    {
-                        fprintf(stderr, "#  \treduced_qrtime    \n");
-                        fprintf(stderr, "  \t%2.4e \n", reduced_qrtime);
-                    }
+                    qr_total += qrtime;
+                    if (myrank_mpi == 0) fprintf(stderr, "Iter %d ZOLO-QR time = %.3f s\n", it, reduced_qrtime);
                 }
             } // end of (it<=1 && maxc>1e2)
             else
@@ -1019,11 +1031,8 @@ int pdgezolopd(char *jobh, int M, int N, double *A_all, int iA_all, int jA_all, 
                 {
                     potime += MPI_Wtime();
                     MPI_Allreduce(&potime, &reduced_potime, 1, MPI_DOUBLE, MPI_MAX, new_comm);
-                    if (myrank_mpi == 0)
-                    {
-                        fprintf(stderr, "#  \treduced_potime    \n");
-                        fprintf(stderr, "  \t%2.4e \n", reduced_potime);
-                    }
+                    chol_total += potime;
+                    if (myrank_mpi == 0) fprintf(stderr, "Iter %d ZOLO-Chol time = %.3f s\n", it, reduced_potime);
                 }
 
                 itpo += 1;
@@ -1150,9 +1159,9 @@ int pdgezolopd(char *jobh, int M, int N, double *A_all, int iA_all, int jA_all, 
                         descU[1] = ictxt;
                     }
                 }
+                // U = U/ff(1);// normalize so that min(svd(A))=1
                 alpha = 1.0;
-                pdlascl_("G", &ff_1, &alpha, &M, &N, A_all, &i1, &i1, descA_all,
-                         &iinfo); // U = U/ff(1);// normalize so that min(svd(A))=1
+                pdlascl_("G", &ff_1, &alpha, &M, &N, A_all, &i1, &i1, descA_all, &iinfo); 
                 if (symm)
                 {
                     pdlacpy_("A", &M, &N, A_all, &i1, &i1, descA_all, B_all, &i1, &i1, descB_all);
@@ -1213,15 +1222,24 @@ int pdgezolopd(char *jobh, int M, int N, double *A_all, int iA_all, int jA_all, 
                 }
             }
 
-            if (prof && myrank_mpi == 0)
+            if (prof)
             {
-                fprintf(stderr, "# \treduced_time_gather \treduced_time_bcast     \n");
-                fprintf(stderr, "  \t%2.4e \t\t%2.4e \n", reduced_time_gather, reduced_time_bcast);
+                comm_total += reduced_time_gather + reduced_time_bcast;
+                if (myrank_mpi == 0) fprintf(stderr, "Iter %d gather & bcast time = %.3f, %.3f s\n", it, reduced_time_gather, reduced_time_bcast);
             }
         } // end of while-loop
         if (verbose && myrank_mpi == 0)
         {
             fprintf(stderr, "Done computing the orthogonal polar factor\n");
+        }
+        U_time += MPI_Wtime();
+        if (prof && myrank_mpi == 0)
+        {
+            fprintf(stderr, "===== ZOLO-PD Timings =====\n");
+            fprintf(stderr, "Compute U matrix total time = %.2f s\n", U_time);
+            fprintf(stderr, "%d ZOLO-QR        = %.3f\n", itqr, qr_total);
+            fprintf(stderr, "%d ZOLO-Chol      = %.3f\n", itpo, chol_total);
+            fprintf(stderr, "%d Gather & Bcast = %.3f\n", itqr + itpo, comm_total);
         }
 
         if (ns)
@@ -1315,6 +1333,7 @@ int pdgezolopd(char *jobh, int M, int N, double *A_all, int iA_all, int jA_all, 
             }
         }
 
+        /*
         if (prof)
         {
             qwtime += MPI_Wtime();
@@ -1342,6 +1361,7 @@ int pdgezolopd(char *jobh, int M, int N, double *A_all, int iA_all, int jA_all, 
             fprintf(stderr, "# #itmax  \t#QR  \t#PO  \n");
             fprintf(stderr, "  \t%d  \t%d  \t%d \n", itmax, nbprob * itqr, nbprob * itpo);
         }
+        */
 
         free(U);
         free(A);

@@ -170,4 +170,8 @@ extern void pxerbla_(int *ictxt, char *srname, int *info);
 extern void pdtrtri_(char *uplo, char *diag, int *n, double *a, int *ia,
   int *ja, int *desca, int *info);
 
+extern void pdgemr2d_(int *m, int *n, double *a, int *ia, int *ja, int *desca, double *b, int *ib, int *jb, int *descb, int *ictxt);
+extern int Csys2blacs_handle(int comm);
+extern void Cblacs_gridmap(int *context, int *map, int ld_usermap, int np_row, int np_col);
+
 #endif

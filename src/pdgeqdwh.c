@@ -193,7 +193,7 @@ int pdgeqdwh(char *jobh, int m, int n, double *A, int iA, int jA, int *descA, do
     double qwtime, litime, nrmtime, potime, qrtime, Htime;
     double sync_time_elapsed, reduced_time_elapsed;
 
-    int verbose = 0, prof = 0, optcond = 0;
+    int verbose = 0, prof = 1, optcond = 0;
     double flops;
     flops = 0.0;
 
@@ -560,7 +560,9 @@ int pdgeqdwh(char *jobh, int m, int n, double *A, int iA, int jA, int *descA, do
         W = (double *)malloc((lwork_qr) * sizeof(double));
     }
 
-    while (conv > tol3 || it < itconv)
+    double qdwh_time = 0.0, cdwh_time = 0.0;
+    //while (conv > tol3 || it < itconv)
+    while (it < itconv)
     {
         /* This should have converged in less than 50 iterations */
         if (it > 100)
@@ -586,7 +588,7 @@ int pdgeqdwh(char *jobh, int m, int n, double *A, int iA, int jA, int *descA, do
 
         if (c > 100)
         {
-
+            if (prof && (myrank_mpi == 0)) printf("Iter %d uses QDWH\n", it);
             qrtime = 0.0;
             if (prof)
             {
@@ -633,6 +635,7 @@ int pdgeqdwh(char *jobh, int m, int n, double *A, int iA, int jA, int *descA, do
             if (prof)
             {
                 qrtime += MPI_Wtime();
+                qdwh_time += qrtime;
             }
 
             /* Main flops used in this step */
@@ -646,6 +649,7 @@ int pdgeqdwh(char *jobh, int m, int n, double *A, int iA, int jA, int *descA, do
         }
         else
         {
+            if (prof && (myrank_mpi == 0)) printf("Iter %d uses CDWH\n", it);
             /**
              * Compute Q1 = c * U * U' + I
              */
@@ -697,6 +701,7 @@ int pdgeqdwh(char *jobh, int m, int n, double *A, int iA, int jA, int *descA, do
             if (prof)
             {
                 potime += MPI_Wtime();
+                cdwh_time += potime;
             }
 
             /* Main flops used in this step */
@@ -770,8 +775,8 @@ int pdgeqdwh(char *jobh, int m, int n, double *A, int iA, int jA, int *descA, do
         fprintf(stderr, "#\n");
         fprintf(stderr, "# \tn    \ttimeQDWH     \ttimeLi     \ttimeNrm    \ttime1itQR   \t#QR    \ttime1itPO   \t#PO  "
                         "  \ttimeFormH \n");
-        fprintf(stderr, "  \t%d \t%2.4e \t%2.4e \t%2.4e \t%2.4e \t%d \t%2.4e \t%d \t%2.4e \n", m, qwtime, litime,
-                nrmtime, qrtime, itqr, potime, itpo, Htime);
+        fprintf(stderr, "  \t%d \t%.3f \t%.3f \t%.3f \t%.3f \t%d \t%.3f \t%d \t%.3f \n", m, qwtime, litime, nrmtime, qrtime, itqr, potime, itpo, Htime);
+        fprintf(stderr, "QDWH total, CDWH total, QDWH + CDWH total = %.3f, %.3f, %.3f\n", qdwh_time, cdwh_time, qdwh_time + cdwh_time);
     }
     if (myrank_mpi == 0)
     {
